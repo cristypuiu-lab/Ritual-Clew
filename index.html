@@ -584,7 +584,7 @@ function saveUsername() {
   const err = document.getElementById('username-error');
   if (val.length < 2)  { err.textContent = 'Min 2 characters.'; return; }
   if (val.length > 18) { err.textContent = 'Max 18 characters.'; return; }
-  if (!/^[a-zA-Z0-9_\-.]+$/.test(val)) { err.textContent = 'Letters, numbers, _ - . only.'; return; }
+  if (!/^[a-zA-Z0-9_\-. ]+$/.test(val)) { err.textContent = 'Letters, numbers, spaces, _ - . only.'; return; }
   err.textContent = '';
   if (st.wallet) {
     st.username = val;
@@ -629,6 +629,8 @@ const K  = { l:false, r:false, u:false, d:false };
 const JY = { x:0, y:0 };
 
 document.addEventListener('keydown', e => {
+  // Don't capture keys when typing in an input field
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   if (['ArrowLeft','KeyA'].includes(e.code))  { K.l=true; e.preventDefault(); }
   if (['ArrowRight','KeyD'].includes(e.code)) { K.r=true; e.preventDefault(); }
   if (['ArrowUp','KeyW'].includes(e.code))    { K.u=true; e.preventDefault(); }
