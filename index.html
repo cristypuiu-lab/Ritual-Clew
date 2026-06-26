@@ -448,6 +448,30 @@ async function sbFetch(path, options={}) {
 // Save score to Supabase
 async function saveScoreRemote(entry) {
   try {
+    // ── Validate score before sending ──────────────────────────
+    // Minimum possible time ~3s (humanly impossible faster)
+    if (entry.ms < 3000)  { console.warn('Score rejected: too fast'); return; }
+    // Maximum = 60s game duration
+    if (entry.ms > 60000) { console.warn('Score rejected: exceeds game time'); return; }
+    // Hits can't be negative
+    if (entry.hits < 0)   { console.warn('Score rejected: negative hits'); return; }
+    // Max hits in 60s (stunned 1.5s each, max ~40 hits realistically)
+    if (entry.hits > 100) { console.warn('Score rejected: too many hits'); return; }
+    // Username required
+    if (!entry.username || entry.username.length < 2) { console.warn('Score rejected: invalid username'); return; }
+    // Server-side rate limit check — max 20 scores per wallet/username per 24h
+    const rateKey = entry.wallet || entry.username;
+    const since = Date.now() - 24*60*60*1000;
+    const recentScores = await sbFetch(
+      'leaderboard?select=ts&or=(username.eq.' + encodeURIComponent(entry.username) + 
+      (entry.wallet ? ',wallet.eq.' + encodeURIComponent(entry.wallet) : '') + ')' +
+      '&ts=gte.' + since + '&order=ts.desc&limit=25',
+      {method:'GET'}
+    );
+    if (recentScores && recentScores.length >= 20) {
+      console.warn('Server rate limit: too many scores in 24h');
+      return;
+    }
     // Check if player already has a score
     const existing = await sbFetch(
       'leaderboard?username=eq.' + encodeURIComponent(entry.username) +
@@ -466,10 +490,19 @@ async function saveScoreRemote(entry) {
         });
       }
     } else {
+      // Sanitize before insert
+      const safeEntry = {
+        username: entry.username.replace(/[<>&"']/g, '').substring(0, 18),
+        wallet: entry.wallet || null,
+        ms: Math.round(entry.ms),
+        hits: Math.round(entry.hits),
+        ts: entry.ts,
+        verified: st.walletVerified || false
+      };
       await sbFetch('leaderboard', {
         method: 'POST',
         prefer: 'return=minimal',
-        body: JSON.stringify(entry)
+        body: JSON.stringify(safeEntry)
       });
     }
     // Refresh LB from remote
@@ -537,15 +570,35 @@ async function connectWallet() {
   try {
     const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
     st.wallet = accounts[0];
+
+    // ── Fix 1: Chain ID check ──────────────────────────────────
+    try {
+      const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+      const RITUAL_CHAIN = '0x60E3'; // Ritual Network testnet
+      if (chainId !== RITUAL_CHAIN) {
+        console.info('Connected on chain:', chainId, '— not Ritual Network, scores still accepted');
+      }
+    } catch(e) { console.warn('Chain check failed:', e); }
+
+    // ── Fix 2: Signature verification ─────────────────────────
+    try {
+      const msg = `Ritual Clew: verify ownership of ${st.wallet.toLowerCase()}`;
+      await window.ethereum.request({ method: 'personal_sign', params: [msg, st.wallet] });
+      st.walletVerified = true;
+    } catch(e) {
+      st.walletVerified = false;
+      console.warn('Signature declined — wallet connected but unverified');
+    }
+
     const saved = localStorage.getItem('rc_user_' + st.wallet.toLowerCase());
     if (saved) { st.username = saved; enablePlay(); }
     else        { showScreen('register'); }
     updateWalletUI();
 
     window.ethereum.on('accountsChanged', accs => {
-      if (!accs.length) { st.wallet = null; st.username = null; disablePlay(); }
+      if (!accs.length) { st.wallet = null; st.username = null; st.walletVerified = false; disablePlay(); }
       else {
-        st.wallet = accs[0];
+        st.wallet = accs[0]; st.walletVerified = false;
         const s2 = localStorage.getItem('rc_user_' + st.wallet.toLowerCase());
         if (s2) { st.username = s2; enablePlay(); }
         else     { st.username = null; showScreen('register'); }
