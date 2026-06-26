@@ -317,7 +317,7 @@ html, body {
   <div id="logo" onclick="showMenu()" style="cursor:pointer" title="Back to menu">RITUAL<span>CLEW</span></div>
   <div id="wallet-area">
     <div id="wallet-status">Not connected</div>
-    <button class="btn" id="connect-btn" onclick="connectWallet()">Connect MetaMask</button>
+    <button class="btn" id="connect-btn" onclick="connectWallet()">Connect Wallet</button>
   </div>
 </div>
 
@@ -355,7 +355,6 @@ html, body {
           <button class="btn yarn-btn" id="play-btn" onclick="playAsGuest()" style="font-size:.28rem;padding:7px 12px;white-space:nowrap">▶ Play with Nickname</button>
           <button class="btn" id="connect-play-btn" onclick="connectAndRegister()" style="font-size:.28rem;padding:7px 12px;white-space:nowrap;color:#00ff6e">🦊 Connect Wallet &amp; Nickname</button>
         </div>
-        <div style="font-size:.45rem;color:#7799bb;margin-top:8px;line-height:1.8;text-align:left">Play with nickname to appear on leaderboard · Connect wallet to verify your score</div>
       </div>
     </div>
 
@@ -542,12 +541,25 @@ let W = 0, H = 0;
 
 function resizeCanvas() {
   const wrap = document.getElementById('game-wrap');
-  W = wrap.clientWidth;
-  H = wrap.clientHeight;
+  const newW = wrap.clientWidth;
+  const newH = wrap.clientHeight;
+  if (!newW || !newH) return;
+  W = newW; H = newH;
   CV.width  = W;
   CV.height = H;
+  // Rebuild background on resize
+  if (typeof buildBG === 'function') try { buildBG(); } catch(e) {}
+  // Clamp entities inside new bounds during game
+  if (st.phase === 'playing') {
+    if (st.cat)  { st.cat.x  = Math.max(20, Math.min(W-20, st.cat.x));  st.cat.y  = Math.max(20, Math.min(H-20, st.cat.y));  }
+    if (st.yarn) { st.yarn.x = Math.max(30, Math.min(W-30, st.yarn.x)); st.yarn.y = Math.max(30, Math.min(H-30, st.yarn.y)); }
+    if (st.dogs) st.dogs.forEach(d => { d.x = Math.max(30, Math.min(W-30, d.x)); d.y = Math.max(30, Math.min(H-30, d.y)); });
+  }
 }
-window.addEventListener('resize', () => { resizeCanvas(); });
+window.addEventListener('resize', () => {
+  resizeCanvas();
+  if (typeof mcResize === 'function') mcResize();
+});
 
 // ── STATE ─────────────────────────────────────────────────────
 const st = {
@@ -571,19 +583,38 @@ async function connectWallet() {
     const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
     st.wallet = accounts[0];
 
-    // ── Fix 1: Chain ID check ──────────────────────────────────
+    // ── Chain: switch to Ritual Network (chainId 1979 = 0x7BB) ──
+    const RITUAL_CHAIN_ID = '0x7BB';
+    const RITUAL_CHAIN_PARAMS = {
+      chainId: RITUAL_CHAIN_ID,
+      chainName: 'Ritual Network',
+      nativeCurrency: { name: 'RITUAL', symbol: 'RITUAL', decimals: 18 },
+      rpcUrls: ['https://rpc.ritualfoundation.org'],
+      blockExplorerUrls: ['https://explorer.ritualfoundation.org']
+    };
     try {
-      const chainId = await window.ethereum.request({ method: 'eth_chainId' });
-      const RITUAL_CHAIN = '0x60E3'; // Ritual Network testnet
-      if (chainId !== RITUAL_CHAIN) {
-        console.info('Connected on chain:', chainId, '— not Ritual Network, scores still accepted');
+      const chainId = await provider.request({ method: 'eth_chainId' });
+      if (chainId !== RITUAL_CHAIN_ID) {
+        try {
+          await provider.request({
+            method: 'wallet_switchEthereumChain',
+            params: [{ chainId: RITUAL_CHAIN_ID }]
+          });
+        } catch(switchErr) {
+          if (switchErr.code === 4902) {
+            await provider.request({
+              method: 'wallet_addEthereumChain',
+              params: [RITUAL_CHAIN_PARAMS]
+            });
+          }
+        }
       }
-    } catch(e) { console.warn('Chain check failed:', e); }
+    } catch(e) { console.warn('Chain switch failed:', e); }
 
     // ── Fix 2: Signature verification ─────────────────────────
     try {
       const msg = `Ritual Clew: verify ownership of ${st.wallet.toLowerCase()}`;
-      await window.ethereum.request({ method: 'personal_sign', params: [msg, st.wallet] });
+      await provider.request({ method: 'personal_sign', params: [msg, st.wallet] });
       st.walletVerified = true;
     } catch(e) {
       st.walletVerified = false;
@@ -595,7 +626,7 @@ async function connectWallet() {
     else        { showScreen('register'); }
     updateWalletUI();
 
-    window.ethereum.on('accountsChanged', accs => {
+    provider.on('accountsChanged', accs => {
       if (!accs.length) { st.wallet = null; st.username = null; st.walletVerified = false; disablePlay(); }
       else {
         st.wallet = accs[0]; st.walletVerified = false;
@@ -605,7 +636,7 @@ async function connectWallet() {
       }
       updateWalletUI();
     });
-  } catch(e) { if (e.code !== 4001) console.error(e); }
+  } catch(e) { if (e.code !== 4001) console.error(e); window._walletProvider = null; }
 }
 
 function updateWalletUI() {
@@ -620,7 +651,7 @@ function updateWalletUI() {
     if (cpb) cpb.style.display = 'none';
   } else {
     st2.textContent = '';
-    btn.textContent = 'Connect MetaMask';
+    btn.textContent = 'Connect Wallet';
     btn.onclick     = connectWallet;
     document.getElementById('play-btn').textContent = '▶ Play with Nickname';
     if (cpb) cpb.style.display = '';
@@ -1393,13 +1424,17 @@ class Yarn {
     const sp=Math.sqrt(this.vx*this.vx+this.vy*this.vy);
     if(sp>mx){this.vx=this.vx/sp*mx;this.vy=this.vy/sp*mx;}
     if(sp>0&&sp<0.5){this.vx=this.vx/sp*0.5;this.vy=this.vy/sp*0.5;}
-    // Hard boundary — directional bounce so it can't hug a wall
+    // Move first
+    this.x+=this.vx; this.y+=this.vy; this.rot+=.048;
+    // Hard boundary AFTER movement — clamp strictly inside canvas
     const pad=30;
     if(this.x<pad){this.vx=Math.abs(this.vx)+0.6;this.x=pad;}
     if(this.x>W-pad){this.vx=-(Math.abs(this.vx)+0.6);this.x=W-pad;}
     if(this.y<pad){this.vy=Math.abs(this.vy)+0.6;this.y=pad;}
     if(this.y>H-pad){this.vy=-(Math.abs(this.vy)+0.6);this.y=H-pad;}
-    this.x+=this.vx; this.y+=this.vy; this.rot+=.048;
+    // Extra safety clamp — never escape canvas
+    this.x=Math.max(pad, Math.min(W-pad, this.x));
+    this.y=Math.max(pad, Math.min(H-pad, this.y));
   }
   deflect(dx,dy){const l=Math.sqrt(dx*dx+dy*dy)||1;this.vx=dx/l*this.spd*1.6;this.vy=dy/l*this.spd*1.6;}
   draw(){drawYarn(this.x,this.y,this.rot);}
@@ -2163,7 +2198,7 @@ window.addEventListener('DOMContentLoaded', ()=>{
   showScreen('menu');
   updateWalletUI();
   if (window.ethereum) {
-    window.ethereum.request({method:'eth_accounts'}).then(accs=>{
+    (window._walletProvider || window.ethereum || window.phantom?.ethereum)?.request({method:'eth_accounts'}).then(accs=>{
       if(accs.length){
         st.wallet=accs[0];
         const saved=localStorage.getItem('rc_user_'+st.wallet.toLowerCase());
